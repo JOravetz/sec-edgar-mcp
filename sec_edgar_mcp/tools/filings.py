@@ -12,6 +12,22 @@ class FilingsTools:
 
     def __init__(self):
         self.client = EdgarClient()
+    
+    def _safe_date_format(self, date_obj):
+        """Safely format a date object to ISO format string."""
+        if date_obj is None:
+            return None
+        
+        # If it's already a string, return as-is
+        if isinstance(date_obj, str):
+            return date_obj
+        
+        # If it has isoformat method (datetime object), use it
+        if hasattr(date_obj, 'isoformat'):
+            return date_obj.isoformat()
+        
+        # Otherwise, convert to string
+        return str(date_obj)
 
     def get_recent_filings(
         self,
@@ -133,7 +149,7 @@ class FilingsTools:
             eightk = filing.obj()
 
             analysis: Dict[str, Any] = {
-                "date_of_report": eightk.date_of_report.isoformat() if hasattr(eightk, "date_of_report") else None,
+                "date_of_report": self._safe_date_format(eightk.date_of_report) if hasattr(eightk, "date_of_report") else None,
                 "items": getattr(eightk, "items", []),
                 "events": {},
             }
@@ -162,7 +178,19 @@ class FilingsTools:
             if hasattr(eightk, "has_press_release"):
                 analysis["has_press_release"] = eightk.has_press_release
                 if eightk.has_press_release and hasattr(eightk, "press_releases"):
-                    analysis["press_releases"] = [pr.title for pr in eightk.press_releases[:3]]
+                    prs = eightk.press_releases
+                    if prs is None:
+                        pass
+                    elif hasattr(prs, "title") and not isinstance(prs, (list, tuple)):
+                        # edgartools returns a single PressRelease (not a list) when there is one
+                        analysis["press_releases"] = [getattr(prs, "title", str(prs))]
+                    else:
+                        try:
+                            analysis["press_releases"] = [
+                                getattr(pr, "title", str(pr)) for pr in list(prs)[:3]
+                            ]
+                        except TypeError:
+                            analysis["press_releases"] = [getattr(prs, "title", str(prs))]
 
             return {"success": True, "analysis": analysis}
         except Exception as e:

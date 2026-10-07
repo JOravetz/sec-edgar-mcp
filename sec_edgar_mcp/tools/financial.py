@@ -1,8 +1,9 @@
 from typing import List, Optional
-import requests
 from ..core.client import EdgarClient
 from ..config import initialize_config
 from .types import ToolResponse
+from ..utils.ixbrl import select_concept
+from ..utils.sec_http import company_facts, sec_get_text
 
 
 class FinancialTools:
@@ -361,6 +362,7 @@ class FinancialTools:
             if not metrics:
                 metrics = [
                     "Revenues",
+                    "RevenueFromContractWithCustomerExcludingAssessedTax",
                     "NetIncomeLoss",
                     "Assets",
                     "Liabilities",
@@ -371,7 +373,7 @@ class FinancialTools:
                 ]
 
             # Get company facts
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             if not facts:
                 return {"success": False, "error": "No facts data available for this company"}
@@ -422,16 +424,34 @@ class FinancialTools:
         """Compare a financial metric across periods."""
         try:
             company = self.client.get_company(identifier)
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
-            # Get the metric data
-            fact_data = facts.get_fact(metric)
-            if fact_data is None or fact_data.empty:
+            # Get the metric data - fix the bug: facts is EntityFacts, not get_fact() method
+            fact_data = None
+            if hasattr(facts, 'data') and facts.data:
+                # Access US-GAAP facts data structure
+                if 'us-gaap' in facts.data and metric in facts.data['us-gaap']:
+                    metric_data = facts.data['us-gaap'][metric]
+                    if 'units' in metric_data:
+                        # Convert units data to DataFrame-like structure
+                        fact_data = []
+                        for unit_type, unit_data in metric_data['units'].items():
+                            for entry in unit_data:
+                                fact_data.append({
+                                    'value': entry.get('val', 0),
+                                    'fy': entry.get('fy', 0),
+                                    'fp': entry.get('fp', ''),
+                                    'unit': unit_type,
+                                    'form': entry.get('form', ''),
+                                    'end': entry.get('end', '')
+                                })
+            
+            if not fact_data:
                 return {"success": False, "error": f"No data found for metric: {metric}"}
 
             # Filter by year range
             period_data = []
-            for _, row in fact_data.iterrows():
+            for row in fact_data:
                 try:
                     year = int(row.get("fy", 0))
                     if start_year <= year <= end_year:
@@ -490,7 +510,7 @@ class FinancialTools:
         """Discover available metrics for a company."""
         try:
             company = self.client.get_company(identifier)
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             if not facts:
                 return {"success": False, "error": "No facts available for this company"}
@@ -526,17 +546,32 @@ class FinancialTools:
 
             for fact_name in common_facts:
                 try:
-                    fact_data = facts.get_fact(fact_name)
-                    if fact_data is not None and not fact_data.empty:
-                        # Apply search filter if provided
-                        if not search_term or search_term.lower() in fact_name.lower():
-                            available_facts.append(
-                                {
-                                    "name": fact_name,
-                                    "count": len(fact_data),
-                                    "latest_period": fact_data.iloc[-1].get("end", "") if not fact_data.empty else None,
-                                }
-                            )
+                    # Fix: Access facts.data structure instead of get_fact()
+                    if hasattr(facts, 'data') and facts.data and 'us-gaap' in facts.data:
+                        if fact_name in facts.data['us-gaap']:
+                            fact_info = facts.data['us-gaap'][fact_name]
+                            if 'units' in fact_info:
+                                # Count total entries across all units
+                                total_count = sum(len(unit_data) for unit_data in fact_info['units'].values())
+                                if total_count > 0:
+                                    # Apply search filter if provided
+                                    if not search_term or search_term.lower() in fact_name.lower():
+                                        # Get latest period from first unit type
+                                        latest_period = None
+                                        for unit_data in fact_info['units'].values():
+                                            if unit_data:
+                                                sorted_data = sorted(unit_data, key=lambda x: x.get('end', ''), reverse=True)
+                                                if sorted_data:
+                                                    latest_period = sorted_data[0].get('end', '')
+                                                    break
+                                        
+                                        available_facts.append(
+                                            {
+                                                "name": fact_name,
+                                                "count": total_count,
+                                                "latest_period": latest_period,
+                                            }
+                                        )
                 except Exception:
                     continue
 
@@ -649,6 +684,8 @@ class FinancialTools:
                     "raw_value": extracted_value.get("raw_value"),
                     "scale": extracted_value.get("scale"),
                     "source": extracted_value.get("source"),
+                    "total_found": extracted_value.get("total_found"),
+                    "members": extracted_value.get("members", []),
                 }
 
             # If direct extraction failed, try fallback
@@ -772,31 +809,21 @@ class FinancialTools:
             # Build URL for the .txt file (contains XBRL)
             url = f"https://www.sec.gov/Archives/edgar/data/{normalized_cik}/{clean_accession}/{accession_number}.txt"
 
-            headers = {
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            }
-
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.text
+            return sec_get_text(url)
 
         except Exception:
             return None
 
     def _extract_xbrl_concept_value(self, filing_content, concept):
-        """Extract XBRL concept value using regex patterns like the old server."""
+        """A numeric concept's undimensioned total (members listed apart), else its text value."""
         import re
 
+        selected = select_concept(filing_content, concept)
+        if selected is not None:
+            return selected
+
         try:
-            # Pattern to find XBRL facts - flexible search for any tag containing the concept name
             patterns = [
-                # Exact matches first (highest priority)
-                rf'<ix:nonFraction[^>]*name="[^"]*:{re.escape(concept)}"[^>]*>([^<]+)</ix:nonFraction>',
-                rf'<ix:nonFraction[^>]*name="{re.escape(concept)}"[^>]*>([^<]+)</ix:nonFraction>',
-                # Flexible substring matches - any tag name containing the concept
-                rf'<ix:nonFraction[^>]*name="[^"]*{re.escape(concept)}[^"]*"[^>]*>([^<]+)</ix:nonFraction>',
-                # Same for nonNumeric tags
                 rf'<ix:nonNumeric[^>]*name="[^"]*:{re.escape(concept)}"[^>]*>([^<]+)</ix:nonNumeric>',
                 rf'<ix:nonNumeric[^>]*name="{re.escape(concept)}"[^>]*>([^<]+)</ix:nonNumeric>',
                 rf'<ix:nonNumeric[^>]*name="[^"]*{re.escape(concept)}[^"]*"[^>]*>([^<]+)</ix:nonNumeric>',

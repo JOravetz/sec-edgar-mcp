@@ -3,6 +3,7 @@ from edgar import Company, set_identity, find_company, search
 from ..utils.cache import TickerCache
 from ..utils.exceptions import CompanyNotFoundError
 from ..config import initialize_config
+from ..utils.sec_http import install_url_fixes
 import edgar
 
 
@@ -11,6 +12,7 @@ class EdgarClient:
 
     def __init__(self):
         self._user_agent = initialize_config()
+        install_url_fixes()
         # Set identity for edgar-tools
         set_identity(self._user_agent)
         # Also set the default user agent

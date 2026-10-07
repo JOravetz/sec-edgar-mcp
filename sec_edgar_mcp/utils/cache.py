@@ -1,7 +1,7 @@
-import requests
-import os
+import json
 from typing import Dict, Optional
 from .exceptions import APIError
+from .sec_http import sec_get_text
 
 
 class TickerCache:
@@ -9,7 +9,6 @@ class TickerCache:
 
     def __init__(self, user_agent: str = None):
         self._cache: Optional[Dict[str, int]] = None
-        self._user_agent = user_agent or os.getenv("SEC_EDGAR_USER_AGENT", "SEC EDGAR MCP/1.0")
 
     def get_cik(self, ticker: str) -> Optional[int]:
         """Get CIK for a ticker symbol."""
@@ -23,11 +22,7 @@ class TickerCache:
         """Load ticker to CIK mapping from SEC."""
         try:
             url = "https://www.sec.gov/files/company_tickers_exchange.json"
-            headers = {"User-Agent": self._user_agent}
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-
-            data = response.json()
+            data = json.loads(sec_get_text(url))
             self._cache = {}
 
             # Handle both dict and list formats

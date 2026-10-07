@@ -3,9 +3,10 @@ SEC EDGAR document parser for handling large filing content with chunking strate
 """
 
 import re
-import requests
 from typing import List, Dict, Optional, Any, Union
 from bs4 import BeautifulSoup
+
+from .utils.sec_http import sec_get_text
 
 
 class FilingSection:
@@ -73,20 +74,9 @@ class SECDocumentParser:
         # Build URL
         url = f"{self.base_url}/{cik}/{clean_accession}/{document_name}"
 
-        headers = {
-            "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-        }
-
         try:
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
+            return sec_get_text(url)
+        except Exception as e:
             raise Exception(f"Failed to fetch document: {str(e)}")
 
     def fetch_filing_txt(self, cik: str, accession_number: str) -> str:

@@ -1,4 +1,5 @@
 from ..core.client import EdgarClient
+from ..utils.sec_http import company_facts
 from ..core.models import CompanyInfo
 from ..utils.exceptions import CompanyNotFoundError
 from .types import ToolResponse
@@ -67,7 +68,7 @@ class CompanyTools:
             company = self.client.get_company(identifier)
 
             # Get company facts using edgar-tools
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             if not facts:
                 return {"success": False, "error": "No facts available for this company"}
@@ -89,6 +90,7 @@ class CompanyTools:
                         "Liabilities",
                         "StockholdersEquity",
                         "Revenues",
+                        "RevenueFromContractWithCustomerExcludingAssessedTax",
                         "NetIncomeLoss",
                         "EarningsPerShareBasic",
                         "CashAndCashEquivalents",

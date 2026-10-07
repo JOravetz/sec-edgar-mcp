@@ -1,8 +1,9 @@
 from typing import List, Optional
-import requests
 from ..core.client import EdgarClient
 from ..config import initialize_config
 from .types import ToolResponse
+from ..utils.ixbrl import select_concept
+from ..utils.sec_http import company_facts, sec_get_text
 
 
 class FinancialTools:
@@ -361,6 +362,7 @@ class FinancialTools:
             if not metrics:
                 metrics = [
                     "Revenues",
+                    "RevenueFromContractWithCustomerExcludingAssessedTax",
                     "NetIncomeLoss",
                     "Assets",
                     "Liabilities",
@@ -371,7 +373,7 @@ class FinancialTools:
                 ]
 
             # Get company facts
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             if not facts:
                 return {"success": False, "error": "No facts data available for this company"}
@@ -422,7 +424,7 @@ class FinancialTools:
         """Compare a financial metric across periods."""
         try:
             company = self.client.get_company(identifier)
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             # Get the metric data - fix the bug: facts is EntityFacts, not get_fact() method
             fact_data = None
@@ -508,7 +510,7 @@ class FinancialTools:
         """Discover available metrics for a company."""
         try:
             company = self.client.get_company(identifier)
-            facts = company.get_facts()
+            facts = company_facts(company.cik)
 
             if not facts:
                 return {"success": False, "error": "No facts available for this company"}
@@ -682,6 +684,8 @@ class FinancialTools:
                     "raw_value": extracted_value.get("raw_value"),
                     "scale": extracted_value.get("scale"),
                     "source": extracted_value.get("source"),
+                    "total_found": extracted_value.get("total_found"),
+                    "members": extracted_value.get("members", []),
                 }
 
             # If direct extraction failed, try fallback
@@ -805,31 +809,21 @@ class FinancialTools:
             # Build URL for the .txt file (contains XBRL)
             url = f"https://www.sec.gov/Archives/edgar/data/{normalized_cik}/{clean_accession}/{accession_number}.txt"
 
-            headers = {
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            }
-
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.text
+            return sec_get_text(url)
 
         except Exception:
             return None
 
     def _extract_xbrl_concept_value(self, filing_content, concept):
-        """Extract XBRL concept value using regex patterns like the old server."""
+        """A numeric concept's undimensioned total (members listed apart), else its text value."""
         import re
 
+        selected = select_concept(filing_content, concept)
+        if selected is not None:
+            return selected
+
         try:
-            # Pattern to find XBRL facts - flexible search for any tag containing the concept name
             patterns = [
-                # Exact matches first (highest priority)
-                rf'<ix:nonFraction[^>]*name="[^"]*:{re.escape(concept)}"[^>]*>([^<]+)</ix:nonFraction>',
-                rf'<ix:nonFraction[^>]*name="{re.escape(concept)}"[^>]*>([^<]+)</ix:nonFraction>',
-                # Flexible substring matches - any tag name containing the concept
-                rf'<ix:nonFraction[^>]*name="[^"]*{re.escape(concept)}[^"]*"[^>]*>([^<]+)</ix:nonFraction>',
-                # Same for nonNumeric tags
                 rf'<ix:nonNumeric[^>]*name="[^"]*:{re.escape(concept)}"[^>]*>([^<]+)</ix:nonNumeric>',
                 rf'<ix:nonNumeric[^>]*name="{re.escape(concept)}"[^>]*>([^<]+)</ix:nonNumeric>',
                 rf'<ix:nonNumeric[^>]*name="[^"]*{re.escape(concept)}[^"]*"[^>]*>([^<]+)</ix:nonNumeric>',

@@ -424,14 +424,32 @@ class FinancialTools:
             company = self.client.get_company(identifier)
             facts = company.get_facts()
 
-            # Get the metric data
-            fact_data = facts.get_fact(metric)
-            if fact_data is None or fact_data.empty:
+            # Get the metric data - fix the bug: facts is EntityFacts, not get_fact() method
+            fact_data = None
+            if hasattr(facts, 'data') and facts.data:
+                # Access US-GAAP facts data structure
+                if 'us-gaap' in facts.data and metric in facts.data['us-gaap']:
+                    metric_data = facts.data['us-gaap'][metric]
+                    if 'units' in metric_data:
+                        # Convert units data to DataFrame-like structure
+                        fact_data = []
+                        for unit_type, unit_data in metric_data['units'].items():
+                            for entry in unit_data:
+                                fact_data.append({
+                                    'value': entry.get('val', 0),
+                                    'fy': entry.get('fy', 0),
+                                    'fp': entry.get('fp', ''),
+                                    'unit': unit_type,
+                                    'form': entry.get('form', ''),
+                                    'end': entry.get('end', '')
+                                })
+            
+            if not fact_data:
                 return {"success": False, "error": f"No data found for metric: {metric}"}
 
             # Filter by year range
             period_data = []
-            for _, row in fact_data.iterrows():
+            for row in fact_data:
                 try:
                     year = int(row.get("fy", 0))
                     if start_year <= year <= end_year:
@@ -526,17 +544,32 @@ class FinancialTools:
 
             for fact_name in common_facts:
                 try:
-                    fact_data = facts.get_fact(fact_name)
-                    if fact_data is not None and not fact_data.empty:
-                        # Apply search filter if provided
-                        if not search_term or search_term.lower() in fact_name.lower():
-                            available_facts.append(
-                                {
-                                    "name": fact_name,
-                                    "count": len(fact_data),
-                                    "latest_period": fact_data.iloc[-1].get("end", "") if not fact_data.empty else None,
-                                }
-                            )
+                    # Fix: Access facts.data structure instead of get_fact()
+                    if hasattr(facts, 'data') and facts.data and 'us-gaap' in facts.data:
+                        if fact_name in facts.data['us-gaap']:
+                            fact_info = facts.data['us-gaap'][fact_name]
+                            if 'units' in fact_info:
+                                # Count total entries across all units
+                                total_count = sum(len(unit_data) for unit_data in fact_info['units'].values())
+                                if total_count > 0:
+                                    # Apply search filter if provided
+                                    if not search_term or search_term.lower() in fact_name.lower():
+                                        # Get latest period from first unit type
+                                        latest_period = None
+                                        for unit_data in fact_info['units'].values():
+                                            if unit_data:
+                                                sorted_data = sorted(unit_data, key=lambda x: x.get('end', ''), reverse=True)
+                                                if sorted_data:
+                                                    latest_period = sorted_data[0].get('end', '')
+                                                    break
+                                        
+                                        available_facts.append(
+                                            {
+                                                "name": fact_name,
+                                                "count": total_count,
+                                                "latest_period": latest_period,
+                                            }
+                                        )
                 except Exception:
                     continue
 

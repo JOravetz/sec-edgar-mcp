@@ -290,6 +290,10 @@ def get_xbrl_concepts(identifier: str, accession_number: str = None, concepts: l
 
     Returns:
         Dictionary containing extracted XBRL concepts with filing_reference and source URLs.
+        Each numeric concept gives the company total for the filing's latest period, its
+        dimensioned "members", and "prior_periods": the same filing's earlier totals of the
+        same length (its comparative columns, e.g. the prior fiscal year), latest first.
+        A concept the filing does not tag is absent from "concepts".
     """
     return financial_tools.get_xbrl_concepts(identifier, accession_number, concepts, form_type)
 

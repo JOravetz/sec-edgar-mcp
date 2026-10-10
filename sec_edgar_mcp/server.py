@@ -240,11 +240,17 @@ def compare_periods(identifier: str, metric: str, start_year: int, end_year: int
     Args:
         identifier: Company ticker symbol or CIK number
         metric: The financial metric to compare (e.g., "Revenues", "NetIncomeLoss")
-        start_year: Starting year for comparison
-        end_year: Ending year for comparison
+        start_year: First calendar year of period END dates to include
+        end_year: Last calendar year of period END dates to include
 
     Returns:
-        Dictionary containing period comparison data and growth analysis
+        Dictionary with "period_data": one row per reported period, each with
+        period_start, period_end, period_type ("annual", "quarter", "instant" or
+        "other", e.g. year to date), value, and the latest filing that reported it
+        (form, accession_number, filed). "fiscal_year_of_filing" is the fiscal year of
+        that filing, not of the period: a 10-K reports prior years too. A period whose
+        value an earlier filing reported differently lists those in "earlier_values".
+        "analysis" gives growth between the first and last ANNUAL periods only.
     """
     return financial_tools.compare_periods(identifier, metric, start_year, end_year)
 

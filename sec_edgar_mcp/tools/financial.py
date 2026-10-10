@@ -1,9 +1,28 @@
+from datetime import date
 from typing import List, Optional
 from ..core.client import EdgarClient
 from ..config import initialize_config
 from .types import ToolResponse
 from ..utils.ixbrl import select_concept
 from ..utils.sec_http import company_facts, sec_get_text
+
+
+
+def _period_days(start: Optional[str], end: str) -> Optional[int]:
+    if not start:
+        return None
+    return (date.fromisoformat(end) - date.fromisoformat(start)).days
+
+
+def _period_type(days: Optional[int]) -> str:
+    """annual (52/53-week years included), quarter, instant (a balance), or other (e.g. year to date)."""
+    if days is None:
+        return "instant"
+    if 350 <= days <= 380:
+        return "annual"
+    if 80 <= days <= 100:
+        return "quarter"
+    return "other"
 
 
 class FinancialTools:
@@ -421,73 +440,80 @@ class FinancialTools:
             return {"success": False, "error": f"Failed to get key metrics: {str(e)}"}
 
     def compare_periods(self, identifier: str, metric: str, start_year: int, end_year: int) -> ToolResponse:
-        """Compare a financial metric across periods."""
+        """A metric's reported values for periods ending in [start_year, end_year].
+
+        companyfacts tags every value with the fiscal year of the filing that reported
+        it, so one 10-K's three annual columns all share one ``fy``. Each value here
+        carries its own period dates, length class and filing instead, appears once per
+        period (from its latest filing, with any differing earlier values listed), and
+        growth is computed over annual periods only.
+        """
         try:
             company = self.client.get_company(identifier)
             facts = company_facts(company.cik)
-
-            # Get the metric data - fix the bug: facts is EntityFacts, not get_fact() method
-            fact_data = None
-            if hasattr(facts, 'data') and facts.data:
-                # Access US-GAAP facts data structure
-                if 'us-gaap' in facts.data and metric in facts.data['us-gaap']:
-                    metric_data = facts.data['us-gaap'][metric]
-                    if 'units' in metric_data:
-                        # Convert units data to DataFrame-like structure
-                        fact_data = []
-                        for unit_type, unit_data in metric_data['units'].items():
-                            for entry in unit_data:
-                                fact_data.append({
-                                    'value': entry.get('val', 0),
-                                    'fy': entry.get('fy', 0),
-                                    'fp': entry.get('fp', ''),
-                                    'unit': unit_type,
-                                    'form': entry.get('form', ''),
-                                    'end': entry.get('end', '')
-                                })
-            
-            if not fact_data:
+            units = (facts.data or {}).get("us-gaap", {}).get(metric, {}).get("units", {})
+            if not units:
                 return {"success": False, "error": f"No data found for metric: {metric}"}
 
-            # Filter by year range
+            by_period: dict[tuple, list[dict]] = {}
+            for unit, entries in units.items():
+                for entry in entries:
+                    end = entry.get("end") or ""
+                    if not end[:4].isdigit() or not start_year <= int(end[:4]) <= end_year:
+                        continue
+                    by_period.setdefault((entry.get("start"), end, unit), []).append(entry)
+
             period_data = []
-            for row in fact_data:
-                try:
-                    year = int(row.get("fy", 0))
-                    if start_year <= year <= end_year:
-                        period_data.append(
+            for (start, end, unit), entries in by_period.items():
+                entries.sort(key=lambda e: (e.get("filed") or "", e.get("accn") or ""), reverse=True)
+                latest = entries[0]
+                earlier, seen = [], {latest.get("val")}
+                for e in entries[1:]:
+                    if e.get("val") not in seen:
+                        seen.add(e.get("val"))
+                        earlier.append(
                             {
-                                "year": year,
-                                "period": row.get("fp", ""),
-                                "value": float(row.get("value", 0)),
-                                "unit": row.get("unit", "USD"),
-                                "form": row.get("form", ""),
+                                "value": float(e.get("val", 0)),
+                                "accession_number": e.get("accn"),
+                                "filed": e.get("filed"),
+                                "form": e.get("form"),
                             }
                         )
-                except Exception:
-                    continue
+                days = _period_days(start, end)
+                row = {
+                    "period_start": start,
+                    "period_end": end,
+                    "period_days": days,
+                    "period_type": _period_type(days),
+                    "value": float(latest.get("val", 0)),
+                    "unit": unit,
+                    "form": latest.get("form"),
+                    "accession_number": latest.get("accn"),
+                    "filed": latest.get("filed"),
+                    "fiscal_year_of_filing": latest.get("fy"),
+                    "fiscal_period_of_filing": latest.get("fp"),
+                }
+                if earlier:
+                    row["earlier_values"] = earlier
+                period_data.append(row)
+            period_data.sort(key=lambda p: (p["period_end"], p["period_start"] or ""))
 
-            # Sort by year
-            period_data.sort(key=lambda x: x["year"])
-
-            # Calculate growth rates
-            if len(period_data) >= 2:
-                first_value = period_data[0]["value"]
-                last_value = period_data[-1]["value"]
-
-                if first_value != 0:
-                    total_growth = ((last_value - first_value) / first_value) * 100
-                    years = period_data[-1]["year"] - period_data[0]["year"]
-                    if years > 0:
-                        cagr = (((last_value / first_value) ** (1 / years)) - 1) * 100
-                    else:
-                        cagr = 0
-                else:
-                    total_growth = 0
-                    cagr = 0
+            annual = [p for p in period_data if p["period_type"] == "annual"]
+            analysis: dict = {"basis": "annual periods", "periods_found": len(period_data)}
+            if len(annual) >= 2 and annual[0]["value"] != 0:
+                first, last = annual[0], annual[-1]
+                years = int(last["period_end"][:4]) - int(first["period_end"][:4])
+                ratio = last["value"] / first["value"]
+                analysis.update(
+                    total_growth_percent=round((ratio - 1) * 100, 2),
+                    cagr_percent=round((ratio ** (1 / years) - 1) * 100, 2) if years > 0 and ratio > 0 else None,
+                    start_value=first["value"],
+                    end_value=last["value"],
+                    start_period_end=first["period_end"],
+                    end_period_end=last["period_end"],
+                )
             else:
-                total_growth = 0
-                cagr = 0
+                analysis.update(total_growth_percent=None, cagr_percent=None)
 
             return {
                 "success": True,
@@ -495,13 +521,7 @@ class FinancialTools:
                 "name": company.name,
                 "metric": metric,
                 "period_data": period_data,
-                "analysis": {
-                    "total_growth_percent": round(total_growth, 2),
-                    "cagr_percent": round(cagr, 2),
-                    "start_value": period_data[0]["value"] if period_data else 0,
-                    "end_value": period_data[-1]["value"] if period_data else 0,
-                    "periods_found": len(period_data),
-                },
+                "analysis": analysis,
             }
         except Exception as e:
             return {"success": False, "error": f"Failed to compare periods: {str(e)}"}

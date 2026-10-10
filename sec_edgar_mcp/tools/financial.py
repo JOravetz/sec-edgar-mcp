@@ -686,6 +686,7 @@ class FinancialTools:
                     "source": extracted_value.get("source"),
                     "total_found": extracted_value.get("total_found"),
                     "members": extracted_value.get("members", []),
+                    "prior_periods": extracted_value.get("prior_periods", []),
                 }
 
             # If direct extraction failed, try fallback
@@ -697,34 +698,30 @@ class FinancialTools:
 
     def _get_xbrl_concept_fallback(self, xbrl, concept_name):
         """Fallback method using edgartools API (may return placeholder values)."""
-        # Try to get the concept using the query method
+        # Try to get the concept using the query method. The query string does not
+        # filter (every fact comes back, cover page first), so match the name here.
         if hasattr(xbrl, "query"):
-            try:
-                # Query for the concept - try exact match first
-                query_result = xbrl.query(f"concept={concept_name}").to_dataframe()
-                if len(query_result) > 0:
-                    fact = query_result.iloc[0]
-                    return {
-                        "value": fact.get("value", None),
-                        "unit": fact.get("unit", None),
-                        "context": fact.get("context", None),
-                        "period": fact.get("period_end", fact.get("period_instant", None)),
-                        "concept": concept_name,
-                    }
-
-                # Try partial match
-                query_result = xbrl.query("").by_concept(concept_name).to_dataframe()
-                if len(query_result) > 0:
-                    fact = query_result.iloc[0]
-                    return {
-                        "value": fact.get("value", None),
-                        "unit": fact.get("unit", None),
-                        "context": fact.get("context", None),
-                        "period": fact.get("period_end", fact.get("period_instant", None)),
-                        "concept": fact.get("concept", concept_name),
-                    }
-            except Exception:
-                pass
+            wanted = concept_name.split(":")[-1].lower()
+            queries = (
+                lambda: xbrl.query(f"concept={concept_name}"),
+                lambda: xbrl.query("").by_concept(concept_name),
+            )
+            for frame in queries:
+                try:
+                    query_result = frame().to_dataframe()
+                    for i in range(len(query_result)):
+                        fact = query_result.iloc[i]
+                        if str(fact.get("concept", "")).split(":")[-1].lower() != wanted:
+                            continue
+                        return {
+                            "value": fact.get("value", None),
+                            "unit": fact.get("unit", None),
+                            "context": fact.get("context", None),
+                            "period": fact.get("period_end", fact.get("period_instant", None)),
+                            "concept": fact.get("concept", concept_name),
+                        }
+                except Exception:
+                    pass
 
         # Try using facts_history method for the concept
         if hasattr(xbrl, "facts") and hasattr(xbrl.facts, "facts_history"):

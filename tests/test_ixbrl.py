@@ -172,3 +172,48 @@ def test_key_metrics_reads_companyfacts(tools, monkeypatch):
     r = tools.get_key_metrics("AAPL", [CONCEPT])
     assert r["success"] is True
     assert r["metrics"][CONCEPT]["value"] == 416_161_000_000
+
+
+class _Frame:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    @property
+    def iloc(self):
+        return self.rows
+
+
+class _Query:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def by_concept(self, name):
+        return self
+
+    def to_dataframe(self):
+        return _Frame(self.rows)
+
+
+class _XbrlIgnoringTheFilter:
+    """edgartools' query("concept=X") is not a filter: it returns every fact, cover page first."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def query(self, _):
+        return _Query(self.rows)
+
+
+def test_fallback_never_reports_another_concept_as_the_requested_one(tools):
+    cover = {"concept": "dei:DocumentFiscalPeriodFocus", "value": "FY", "period_end": "2026-06-30"}
+    assert tools._get_xbrl_concept_fallback(_XbrlIgnoringTheFilter([cover]), "Revenues") is None
+
+
+def test_fallback_returns_the_exact_concept_when_present(tools):
+    cover = {"concept": "dei:DocumentFiscalPeriodFocus", "value": "FY", "period_end": "2026-06-30"}
+    rev = {"concept": "us-gaap:Revenues", "value": 5.0, "period_end": "2026-06-30"}
+    r = tools._get_xbrl_concept_fallback(_XbrlIgnoringTheFilter([cover, rev]), "Revenues")
+    assert (r["concept"], r["value"]) == ("us-gaap:Revenues", 5.0)

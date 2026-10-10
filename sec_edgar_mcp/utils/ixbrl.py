@@ -6,6 +6,8 @@ members, e.g. ProductOrServiceAxis=ProductMember). Taking the first tag in the
 document returns whichever comes first, often a segment line. ``select_concept``
 returns the undimensioned total for the latest, longest period, and lists the
 dimensioned facts for that same period separately, each labeled by its members.
+It also lists the earlier totals of the same length, the filing's comparative
+columns (the prior fiscal year beside the current one).
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ _TYPED = re.compile(r"<xbrldi:typedMember\b[^>]*\bdimension=\"([^\"]+)\"[^>]*>(.
 _NON_FRACTION = re.compile(r"<ix:nonFraction\b([^>]*)>(.*?)</ix:nonFraction>", re.S | re.I)
 _TAGS = re.compile(r"<[^>]+>")
 _ZERO_TEXT = {"", "-", "—", "–", "--"}
+# 52/53-week fiscal years differ by 7 days; a quarter is never within this of a year.
+_SAME_LENGTH_DAYS = 7
 
 
 def _attr(attrs: str, name: str) -> str | None:
@@ -117,12 +121,25 @@ def concept_facts(content: str, concept: str, contexts: dict[str, Context] | Non
     return facts
 
 
+def _prior_periods(totals: list[Fact], best: Fact) -> list[dict]:
+    """Earlier undimensioned totals as long as *best*, one per period, latest first."""
+    by_period: dict[tuple, Fact] = {}
+    for f in totals:
+        if not f.context.end or not best.context.end or f.context.end >= best.context.end:
+            continue
+        if abs(f.context.days - best.context.days) > _SAME_LENGTH_DAYS:
+            continue
+        by_period.setdefault((f.context.start, f.context.end), f)
+    return [f.as_dict() for f in sorted(by_period.values(), key=lambda f: f.context.end or "", reverse=True)]
+
+
 def select_concept(content: str, concept: str) -> dict | None:
     """The undimensioned total for the latest, longest period, plus that period's members.
 
     None when the concept is not tagged at all. When only dimensioned facts exist,
     ``value`` is None and ``total_found`` is False, so a member is never passed off
-    as the total.
+    as the total. ``prior_periods`` holds the earlier totals of the same length
+    (the comparative columns), latest first.
     """
     facts = concept_facts(content, concept)
     if not facts:
@@ -140,6 +157,7 @@ def select_concept(content: str, concept: str) -> dict | None:
         **(best.as_dict() if totals else {k: None for k in best.as_dict()}),
         "total_found": bool(totals),
         "members": members,
+        "prior_periods": _prior_periods(totals, best) if totals else [],
         "source": "xbrl_direct_extraction",
     }
     if not totals:

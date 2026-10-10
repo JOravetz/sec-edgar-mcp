@@ -686,6 +686,7 @@ class FinancialTools:
                     "source": extracted_value.get("source"),
                     "total_found": extracted_value.get("total_found"),
                     "members": extracted_value.get("members", []),
+                    "prior_periods": extracted_value.get("prior_periods", []),
                 }
 
             # If direct extraction failed, try fallback

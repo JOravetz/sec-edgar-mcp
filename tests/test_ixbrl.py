@@ -85,6 +85,52 @@ def test_sign_and_zero_dash():
     assert select_concept(dash, CONCEPT)["value"] == 0
 
 
+def test_prior_periods_are_the_comparative_totals_of_the_same_length():
+    r = select_concept(APPLE_LIKE, CONCEPT)
+    # the prior fiscal year is listed; the quarter (c-30) and the members are not
+    assert [(p["context_ref"], p["period_start"], p["period"], p["value"]) for p in r["prior_periods"]] == [
+        ("c-2", "2023-10-01", "2024-09-28", 391_035_000_000)
+    ]
+
+
+def test_prior_periods_keep_53_week_years_and_order_latest_first():
+    content = "".join(
+        [
+            ctx("c-1", "2024-09-29", "2025-09-27"),
+            ctx("c-2", "2023-09-24", "2024-09-28"),  # a 53-week year
+            ctx("c-3", "2022-09-25", "2023-09-30"),
+            fact("c-3", "383,285"),
+            fact("c-1", "416,161"),
+            fact("c-2", "391,035"),
+        ]
+    )
+    priors = select_concept(content, CONCEPT)["prior_periods"]
+    assert [p["context_ref"] for p in priors] == ["c-2", "c-3"]
+
+
+def test_prior_periods_for_instants_are_earlier_instants():
+    def inst(cid, day):
+        return (
+            f'<xbrli:context id="{cid}"><xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier>'
+            f"</xbrli:entity><xbrli:period><xbrli:instant>{day}</xbrli:instant></xbrli:period></xbrli:context>"
+        )
+
+    content = (
+        inst("i-1", "2025-09-27")
+        + inst("i-0", "2024-09-28")
+        + fact("i-1", "10", name="us-gaap:Assets")
+        + fact("i-0", "9", name="us-gaap:Assets")
+    )
+    r = select_concept(content, "Assets")
+    assert r["period"] == "2025-09-27"
+    assert [(p["period"], p["value"]) for p in r["prior_periods"]] == [("2024-09-28", 9_000_000)]
+
+
+def test_only_dimensioned_facts_have_no_prior_periods():
+    content = ctx("c-12", "2024-09-29", "2025-09-27", "us-gaap:ProductMember") + fact("c-12", "307,003")
+    assert select_concept(content, CONCEPT)["prior_periods"] == []
+
+
 def test_untagged_concept_is_none():
     assert select_concept(APPLE_LIKE, "NetIncomeLoss") is None
 
@@ -98,6 +144,7 @@ def tools(monkeypatch):
 def test_xbrl_extraction_through_the_tool_returns_the_total(tools):
     r = tools._extract_xbrl_concept_value(APPLE_LIKE, CONCEPT)
     assert r["value"] == 416_161_000_000 and len(r["members"]) == 2
+    assert [p["value"] for p in r["prior_periods"]] == [391_035_000_000]
 
 
 class _Company:

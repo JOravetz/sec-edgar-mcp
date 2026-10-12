@@ -1,6 +1,7 @@
 import argparse
 from mcp.server.fastmcp import FastMCP
 from sec_edgar_mcp.tools import CompanyTools, FilingsTools, FinancialTools, InsiderTools
+from sec_edgar_mcp.tools.documents import DocumentTools
 
 
 # Initialize MCP server
@@ -41,6 +42,7 @@ YOU ARE A FILING DATA EXTRACTION SERVICE, NOT A FINANCIAL ANALYST OR ADVISOR.
 company_tools = CompanyTools()
 filings_tools = FilingsTools()
 financial_tools = FinancialTools()
+document_tools = DocumentTools()
 insider_tools = InsiderTools()
 
 
@@ -154,6 +156,35 @@ def analyze_8k(identifier: str, accession_number: str):
         Dictionary containing analysis of 8-K items and events
     """
     return filings_tools.analyze_8k(identifier, accession_number)
+
+
+@mcp.tool("get_sec_document")
+def get_sec_document(url: str, find: str = None, offset: int = 0, page: int = 1):
+    """
+    Read a sec.gov document that is not an EDGAR filing: a staff report, rule, release,
+    speech or press release (e.g. https://www.sec.gov/files/...pdf, /rules/..., /news/...).
+
+    EDGAR filings (/Archives/edgar/...) are refused: read those by accession number with
+    get_filing_content, get_filing_sections or get_xbrl_concepts.
+
+    Only https://www.sec.gov or https://sec.gov; redirects are re-checked. Documents over
+    25 MB are refused, never truncated. A PDF comes back 20 pages per call (pass page=
+    next_page for the rest); any text 30,000 characters per call (offset=next_offset).
+    find: up to 10 terms separated by " | "; each returns up to 5 matches across the whole
+    document with their page numbers. The result's url and sha256 identify the exact
+    document read; cite the url.
+
+    Args:
+        url: The sec.gov document URL
+        find: Optional search terms, separated by " | "
+        offset: Character offset into the returned text (default 0)
+        page: First PDF page to return (default 1)
+
+    Returns:
+        Dictionary with url, requested_url, content_type, bytes, sha256, text, paging fields
+        (total_pages, pages, next_page for PDFs; offset, next_offset, total_chars) and find.
+    """
+    return document_tools.get_sec_document(url, find, offset, page)
 
 
 @mcp.tool("get_filing_sections")

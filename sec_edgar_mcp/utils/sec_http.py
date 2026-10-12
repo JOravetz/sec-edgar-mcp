@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PLACEHOLDER_DOMAINS = ("example.com", "example.org", "example.net")
@@ -45,6 +46,52 @@ def sec_get_text(url: str) -> str:
     response = get_with_retry(url)
     response.raise_for_status()
     return response.text
+
+
+class TooLarge(Exception):
+    """A response body over the caller's byte limit; nothing partial is returned."""
+
+
+@dataclass(frozen=True)
+class Hop:
+    """One GET without following redirects: a body (2xx and others) or a redirect target."""
+
+    status: int
+    content_type: str
+    body: bytes | None
+    location: str | None
+
+
+def sec_get_once(url: str, max_bytes: int) -> Hop:
+    """One GET of *url* under the shared 8/s throttle with the declared User-Agent, redirects
+    not followed (the caller re-checks each target), the body streamed and refused past
+    *max_bytes*."""
+    from edgar import set_identity
+    from edgar.httpclient import http_client
+    from edgar.httprequests import max_requests_per_second, throttle_requests
+
+    # edgartools' client reads the identity from its own setting, not the header passed here.
+    set_identity(declared_user_agent())
+
+    @throttle_requests(requests_per_second=max_requests_per_second)
+    def get(target: str) -> Hop:
+        headers = {"User-Agent": declared_user_agent()}
+        with http_client() as client:
+            with client.stream("GET", target, headers=headers, follow_redirects=False) as response:
+                content_type = response.headers.get("content-type", "")
+                if 300 <= response.status_code < 400:
+                    return Hop(response.status_code, content_type, None, response.headers.get("location"))
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise TooLarge(f"{target} is {int(declared):,} bytes, larger than {max_bytes:,}")
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > max_bytes:
+                        raise TooLarge(f"{target} is larger than {max_bytes:,} bytes")
+                return Hop(response.status_code, content_type, bytes(body), None)
+
+    return get(url)
 
 
 def install_url_fixes() -> None:

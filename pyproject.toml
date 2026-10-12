@@ -19,6 +19,7 @@ dependencies = [
   "mcp[cli]>=1.7.1",
   "edgartools>=4.4.0",
   "requests>=2.31.0",
+  "pypdf==6.20.0",
 ]
 
 [tool.setuptools]
